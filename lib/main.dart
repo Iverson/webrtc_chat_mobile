@@ -1,4 +1,6 @@
+import 'dart:developer' as developer;
 import 'package:flutter/material.dart';
+import 'package:flutter_webrtc/webrtc.dart';
 
 void main() => runApp(MyApp());
 
@@ -9,18 +11,22 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Flutter Demo',
       theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // Try running your application with "flutter run". You'll see the
-        // application has a blue toolbar. Then, without quitting the app, try
-        // changing the primarySwatch below to Colors.green and then invoke
-        // "hot reload" (press "r" in the console where you ran "flutter run",
-        // or simply save your changes to "hot reload" in a Flutter IDE).
-        // Notice that the counter didn't reset back to zero; the application
-        // is not restarted.
-        primarySwatch: Colors.blue,
-      ),
-      home: MyHomePage(title: 'Flutter Demo Home Page'),
+          // This is the theme of your application.
+          //
+          // Try running your application with "flutter run". You'll see the
+          // application has a blue toolbar. Then, without quitting the app, try
+          // changing the primarySwatch below to Colors.green and then invoke
+          // "hot reload" (press "r" in the console where you ran "flutter run",
+          // or simply save your changes to "hot reload" in a Flutter IDE).
+          // Notice that the counter didn't reset back to zero; the application
+          // is not restarted.
+          primarySwatch: Colors.blue,
+          buttonTheme: ButtonThemeData(
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(5)),
+            textTheme: ButtonTextTheme.primary,
+          )),
+      home: MyHomePage(title: 'Flutter WebRTC App'),
     );
   }
 }
@@ -44,16 +50,150 @@ class MyHomePage extends StatefulWidget {
 }
 
 class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+  String _peerId = '';
 
-  void _incrementCounter() {
+  RTCPeerConnection _peerConnection;
+  bool _inCalling = false;
+
+  RTCDataChannelInit _dataChannelDict;
+  RTCDataChannel _dataChannel;
+
+  String _sdp;
+
+  void _connectToPeer() {
+    developer.log('_connectToPeer');
+    _hangUp();
+    _makeCall();
+  }
+
+  void _setPeerId(String id) {
     setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
+      _peerId = id;
+    });
+  }
+
+  _onSignalingState(RTCSignalingState state) {
+    print(state);
+  }
+
+  _onIceGatheringState(RTCIceGatheringState state) {
+    print(state);
+  }
+
+  _onIceConnectionState(RTCIceConnectionState state) {
+    print(state);
+  }
+
+  _onCandidate(RTCIceCandidate candidate) {
+    print('onCandidate: ' + candidate.candidate);
+    _peerConnection.addCandidate(candidate);
+    setState(() {
+      _sdp += '\n';
+      _sdp += candidate.candidate;
+    });
+  }
+
+  _onRenegotiationNeeded() {
+    print('RenegotiationNeeded');
+  }
+
+  /// Send some sample messages and handle incoming messages.
+  _onDataChannel(RTCDataChannel dataChannel) {
+    dataChannel.onMessage = (message) {
+      if (message.type == MessageType.text) {
+        print(message.text);
+      } else {
+        // do something with message.binary
+      }
+    };
+    // or alternatively:
+    dataChannel.messageStream.listen((message) {
+      if (message.type == MessageType.text) {
+        print(message.text);
+      } else {
+        // do something with message.binary
+      }
+    });
+
+    dataChannel.send(RTCDataChannelMessage("Hello!"));
+  }
+
+  // Platform messages are asynchronous, so we initialize in an async method.
+  _makeCall() async {
+    Map<String, dynamic> configuration = {
+      "iceServers": [
+        {"url": "stun:stun.l.google.com:19302"},
+      ]
+    };
+
+    final Map<String, dynamic> offerSdpConstraints = {
+      "mandatory": {
+        "OfferToReceiveAudio": false,
+        "OfferToReceiveVideo": false,
+      },
+      "optional": [],
+    };
+
+    final Map<String, dynamic> loopbackConstraints = {
+      "mandatory": {},
+      "optional": [
+        {"DtlsSrtpKeyAgreement": true},
+      ],
+    };
+
+    if (_peerConnection != null) return;
+
+    try {
+      _peerConnection =
+          await createPeerConnection(configuration, loopbackConstraints);
+
+      _peerConnection.onSignalingState = _onSignalingState;
+      _peerConnection.onIceGatheringState = _onIceGatheringState;
+      _peerConnection.onIceConnectionState = _onIceConnectionState;
+      _peerConnection.onIceCandidate = _onCandidate;
+      _peerConnection.onRenegotiationNeeded = _onRenegotiationNeeded;
+
+      _dataChannelDict = new RTCDataChannelInit();
+      _dataChannelDict.id = 1;
+      _dataChannelDict.ordered = true;
+      _dataChannelDict.maxRetransmitTime = -1;
+      _dataChannelDict.maxRetransmits = -1;
+      _dataChannelDict.protocol = "sctp";
+      _dataChannelDict.negotiated = false;
+
+      _dataChannel = await _peerConnection.createDataChannel(
+          'dataChannel', _dataChannelDict);
+      _peerConnection.onDataChannel = _onDataChannel;
+
+      RTCSessionDescription description =
+          await _peerConnection.createOffer(offerSdpConstraints);
+      print(description.sdp);
+      _peerConnection.setLocalDescription(description);
+
+      _sdp = description.sdp;
+      //change for loopback.
+      //description.type = 'answer';
+      //_peerConnection.setRemoteDescription(description);
+    } catch (e) {
+      print(e.toString());
+    }
+    if (!mounted) return;
+
+    setState(() {
+      _inCalling = true;
+    });
+  }
+
+  _hangUp() async {
+    try {
+      await _dataChannel.close();
+      await _peerConnection.close();
+      _peerConnection = null;
+    } catch (e) {
+      print('_hangUp: ${e.toString()}');
+    }
+    setState(() {
+      _inCalling = false;
     });
   }
 
@@ -74,38 +214,41 @@ class _MyHomePageState extends State<MyHomePage> {
       body: Center(
         // Center is a layout widget. It takes a single child and positions it
         // in the middle of the parent.
-        child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Invoke "debug painting" (press "p" in the console, choose the
-          // "Toggle Debug Paint" action from the Flutter Inspector in Android
-          // Studio, or the "Toggle Debug Paint" command in Visual Studio Code)
-          // to see the wireframe for each widget.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            Text(
-              'You have pushed the button this many times:',
-            ),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.display1,
-            ),
-          ],
+        child: Container(
+          padding: EdgeInsets.all(20),
+          child: Column(
+            // Column is also a layout widget. It takes a list of children and
+            // arranges them vertically. By default, it sizes itself to fit its
+            // children horizontally, and tries to be as tall as its parent.
+            //
+            // Invoke "debug painting" (press "p" in the console, choose the
+            // "Toggle Debug Paint" action from the Flutter Inspector in Android
+            // Studio, or the "Toggle Debug Paint" command in Visual Studio Code)
+            // to see the wireframe for each widget.
+            //
+            // Column has various properties to control how it sizes itself and
+            // how it positions its children. Here we use mainAxisAlignment to
+            // center the children vertically; the main axis here is the vertical
+            // axis because Columns are vertical (the cross axis would be
+            // horizontal).
+            mainAxisAlignment: MainAxisAlignment.start,
+            children: <Widget>[
+              TextField(
+                  onChanged: _setPeerId,
+                  decoration: InputDecoration(hintText: 'Enter a Peer ID')),
+              Container(
+                margin: EdgeInsets.only(top: 10),
+                child: RaisedButton(
+                  onPressed: _peerId != '' ? _connectToPeer : null,
+                  child: Text('Connect', style: TextStyle(fontSize: 14)),
+                ),
+              ),
+              Text(_inCalling == true ? '_inCalling' : '',
+                  style: TextStyle(fontSize: 14))
+            ],
+          ),
         ),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: Icon(Icons.add),
-      ), // This trailing comma makes auto-formatting nicer for build methods.
     );
   }
 }
