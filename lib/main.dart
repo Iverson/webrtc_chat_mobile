@@ -1,6 +1,8 @@
 import 'dart:developer' as developer;
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/webrtc.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:webrtc_chat_mobile/room.dart';
 
 void main() => runApp(MyApp());
 
@@ -51,6 +53,8 @@ class MyHomePage extends StatefulWidget {
 
 class _MyHomePageState extends State<MyHomePage> {
   String _peerId = '';
+  dynamic _room;
+  RTCDataChannel _chatChannel;
 
   RTCPeerConnection _peerConnection;
   bool _inCalling = false;
@@ -58,17 +62,118 @@ class _MyHomePageState extends State<MyHomePage> {
   RTCDataChannelInit _dataChannelDict;
   RTCDataChannel _dataChannel;
 
-  String _sdp;
+  String _newMessageText;
+  List<String> _messages = [];
+  final _newMessageFieldController = TextEditingController();
 
-  void _connectToPeer() {
+  Map<String, dynamic> _rtcConfig = {
+    "iceServers": [
+      {"url": "stun:stun.l.google.com:19302"},
+    ]
+  };
+
+  final Map<String, dynamic> _rtcConstraints = {
+    'mandatory': {
+      'OfferToReceiveAudio': false,
+      'OfferToReceiveVideo': false,
+    },
+    'optional': [],
+  };
+
+  void _joinRoom() async {
+    await _createNewRTCConnection();
+    setState(() {
+      _messages = [];
+    });
+    var roomDoc = Firestore.instance.collection('rooms').document(_peerId);
+    var roomSnapshot = await roomDoc.get();
+    if (roomSnapshot.exists) {
+      roomDoc
+          .snapshots()
+          .listen((payload) => _room = payload.exists ? payload : null);
+
+      // Listening for remote ICE candidates below
+      roomDoc.collection('callerCandidates').snapshots().listen((data) async {
+        data.documentChanges.forEach((change) async {
+          if (change.type == DocumentChangeType.added) {
+            var data = change.document.data;
+            var candidate = new RTCIceCandidate(
+                data['candidate'], data['sdpMid'], data['sdpMLineIndex']);
+            await _peerConnection.addCandidate(candidate);
+          }
+        });
+      });
+      // Code for collecting ICE candidates above
+
+      // Code for collecting ICE candidates below
+      var calleeCandidatesCollection = roomDoc.collection('calleeCandidates');
+      _peerConnection.onIceCandidate = (RTCIceCandidate candidate) {
+        calleeCandidatesCollection.add(candidate.toMap());
+      };
+
+      // Code for creating SDP answer below
+      var room = Room.fromJson(roomSnapshot.data);
+      var offer = room.offer;
+      await _peerConnection.setRemoteDescription(offer);
+      var answer = await _peerConnection.createAnswer(_rtcConstraints);
+      await _peerConnection.setLocalDescription(answer);
+
+      await roomDoc.updateData({
+        'answer': {
+          'type': answer.type,
+          'sdp': answer.sdp,
+        },
+      });
+      // Code for creating SDP answer above
+    } else {
+      _closeRTCConnection();
+
+      return showDialog<void>(
+        context: context,
+        barrierDismissible: false, // user must tap button!
+        builder: (BuildContext context) {
+          return AlertDialog(
+            title: Text('Not found'),
+            content: SingleChildScrollView(
+              child: ListBody(
+                children: <Widget>[
+                  Text('There is no Room with ID: $_peerId :('),
+                ],
+              ),
+            ),
+            actions: <Widget>[
+              FlatButton(
+                child: Text('Ok'),
+                onPressed: () {
+                  Navigator.of(context).pop();
+                },
+              ),
+            ],
+          );
+        },
+      );
+    }
+
     developer.log('_connectToPeer');
-    _hangUp();
-    _makeCall();
   }
 
   void _setPeerId(String id) {
     setState(() {
       _peerId = id;
+    });
+  }
+
+  void _setNewMessageText(String text) {
+    setState(() {
+      _newMessageText = text;
+    });
+  }
+
+  void _sendNewMessage(String text) {
+    setState(() {
+      _messages.add(text);
+      _chatChannel.send(RTCDataChannelMessage(text));
+      _newMessageFieldController.clear();
     });
   }
 
@@ -84,73 +189,90 @@ class _MyHomePageState extends State<MyHomePage> {
     print(state);
   }
 
-  _onCandidate(RTCIceCandidate candidate) {
-    print('onCandidate: ' + candidate.candidate);
-    _peerConnection.addCandidate(candidate);
-    setState(() {
-      _sdp += '\n';
-      _sdp += candidate.candidate;
-    });
-  }
-
   _onRenegotiationNeeded() {
     print('RenegotiationNeeded');
   }
 
+  bool get isChatConnected {
+    return _room != null &&
+        _chatChannel != null &&
+        _chatChannel.state == RTCDataChannelState.RTCDataChannelOpen;
+  }
+
+  bool get isChatConnecting {
+    return _peerConnection != null && !isChatConnected;
+  }
+
   /// Send some sample messages and handle incoming messages.
-  _onDataChannel(RTCDataChannel dataChannel) {
-    dataChannel.onMessage = (message) {
+  _onDataChannel(RTCDataChannel channel) {
+    setState(() => _chatChannel = channel);
+
+    channel.onMessage = (message) {
       if (message.type == MessageType.text) {
+        setState(() {
+          _messages.add(message.text);
+        });
         print(message.text);
       } else {
         // do something with message.binary
       }
     };
-    // or alternatively:
-    dataChannel.messageStream.listen((message) {
-      if (message.type == MessageType.text) {
-        print(message.text);
-      } else {
-        // do something with message.binary
-      }
-    });
 
-    dataChannel.send(RTCDataChannelMessage("Hello!"));
+    channel.onDataChannelState = (state) {
+      switch (state) {
+        case RTCDataChannelState.RTCDataChannelOpen:
+          print('onDataChannelState: Open');
+          setState(() {
+            final messageText = 'Hi! I just connected';
+            channel.send(RTCDataChannelMessage(messageText));
+          });
+          break;
+
+        case RTCDataChannelState.RTCDataChannelClosed:
+          print('onDataChannelState: Closed');
+          break;
+        default:
+      }
+    };
+
+    // setState(() {
+    //   _chatChannel = channel;
+    // });
+
+    // channel.onclose = () => {
+    //   console.log('datachannel close')
+    //   this.destroyChat()
+    // }
+
+    // dataChannel.send(RTCDataChannelMessage("Hello!"));
+  }
+
+  _closeRTCConnection() {
+    if (_peerConnection != null) {
+      _peerConnection.close();
+      setState(() {
+        _peerConnection = null;
+      });
+    }
   }
 
   // Platform messages are asynchronous, so we initialize in an async method.
-  _makeCall() async {
-    Map<String, dynamic> configuration = {
-      "iceServers": [
-        {"url": "stun:stun.l.google.com:19302"},
-      ]
-    };
-
-    final Map<String, dynamic> offerSdpConstraints = {
-      "mandatory": {
-        "OfferToReceiveAudio": false,
-        "OfferToReceiveVideo": false,
-      },
-      "optional": [],
-    };
-
-    final Map<String, dynamic> loopbackConstraints = {
+  _createNewRTCConnection() async {
+    final Map<String, dynamic> _config = {
       "mandatory": {},
       "optional": [
         {"DtlsSrtpKeyAgreement": true},
       ],
     };
 
-    if (_peerConnection != null) return;
+    _closeRTCConnection();
 
     try {
-      _peerConnection =
-          await createPeerConnection(configuration, loopbackConstraints);
+      _peerConnection = await createPeerConnection(_rtcConfig, _config);
 
       _peerConnection.onSignalingState = _onSignalingState;
       _peerConnection.onIceGatheringState = _onIceGatheringState;
       _peerConnection.onIceConnectionState = _onIceConnectionState;
-      _peerConnection.onIceCandidate = _onCandidate;
       _peerConnection.onRenegotiationNeeded = _onRenegotiationNeeded;
 
       _dataChannelDict = new RTCDataChannelInit();
@@ -162,39 +284,23 @@ class _MyHomePageState extends State<MyHomePage> {
       _dataChannelDict.negotiated = false;
 
       _dataChannel = await _peerConnection.createDataChannel(
-          'dataChannel', _dataChannelDict);
+          'chat-channel', _dataChannelDict);
       _peerConnection.onDataChannel = _onDataChannel;
 
-      RTCSessionDescription description =
-          await _peerConnection.createOffer(offerSdpConstraints);
-      print(description.sdp);
-      _peerConnection.setLocalDescription(description);
+      setState(() {});
+      return _peerConnection;
 
-      _sdp = description.sdp;
+      // RTCSessionDescription description =
+      //     await _peerConnection.createOffer(offerSdpConstraints);
+      // print(description.sdp);
+      // _peerConnection.setLocalDescription(description);
+
       //change for loopback.
       //description.type = 'answer';
       //_peerConnection.setRemoteDescription(description);
     } catch (e) {
       print(e.toString());
     }
-    if (!mounted) return;
-
-    setState(() {
-      _inCalling = true;
-    });
-  }
-
-  _hangUp() async {
-    try {
-      await _dataChannel.close();
-      await _peerConnection.close();
-      _peerConnection = null;
-    } catch (e) {
-      print('_hangUp: ${e.toString()}');
-    }
-    setState(() {
-      _inCalling = false;
-    });
   }
 
   @override
@@ -233,18 +339,50 @@ class _MyHomePageState extends State<MyHomePage> {
             // horizontal).
             mainAxisAlignment: MainAxisAlignment.start,
             children: <Widget>[
-              TextField(
-                  onChanged: _setPeerId,
-                  decoration: InputDecoration(hintText: 'Enter a Peer ID')),
-              Container(
-                margin: EdgeInsets.only(top: 10),
-                child: RaisedButton(
-                  onPressed: _peerId != '' ? _connectToPeer : null,
-                  child: Text('Connect', style: TextStyle(fontSize: 14)),
+              if (!isChatConnected)
+                Column(
+                  children: <Widget>[
+                    TextField(
+                        onChanged: _setPeerId,
+                        decoration:
+                            InputDecoration(hintText: 'Enter a Peer ID')),
+                    Container(
+                      margin: EdgeInsets.only(top: 10),
+                      child: RaisedButton(
+                        onPressed: _peerId != '' &&
+                                !isChatConnecting &&
+                                !isChatConnected
+                            ? _joinRoom
+                            : null,
+                        child: Text('Connect', style: TextStyle(fontSize: 14)),
+                      ),
+                    ),
+                  ],
                 ),
-              ),
-              Text(_inCalling == true ? '_inCalling' : '',
-                  style: TextStyle(fontSize: 14))
+              if (isChatConnected)
+                Column(
+                  children: <Widget>[
+                    Text(
+                      'You\'re in Chat: $_peerId',
+                      style: TextStyle(fontSize: 18),
+                    ),
+                    TextField(
+                        onSubmitted: _sendNewMessage,
+                        controller: _newMessageFieldController,
+                        decoration:
+                            InputDecoration(hintText: 'Write a message...')),
+                    ListView.builder(
+                        shrinkWrap: true,
+                        padding: const EdgeInsets.all(8),
+                        itemCount: _messages.length,
+                        itemBuilder: (BuildContext context, int index) {
+                          return Container(
+                            height: 50,
+                            child: Center(child: Text('${_messages[index]}')),
+                          );
+                        })
+                  ],
+                ),
             ],
           ),
         ),
