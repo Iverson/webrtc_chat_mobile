@@ -55,15 +55,11 @@ class _MyHomePageState extends State<MyHomePage> {
   String _peerId = '';
   dynamic _room;
   RTCDataChannel _chatChannel;
-
   RTCPeerConnection _peerConnection;
-  bool _inCalling = false;
-
-  RTCDataChannelInit _dataChannelDict;
   RTCDataChannel _dataChannel;
 
-  String _newMessageText;
   List<String> _messages = [];
+  final _roomIDFieldController = TextEditingController();
   final _newMessageFieldController = TextEditingController();
 
   Map<String, dynamic> _rtcConfig = {
@@ -163,34 +159,12 @@ class _MyHomePageState extends State<MyHomePage> {
     });
   }
 
-  void _setNewMessageText(String text) {
-    setState(() {
-      _newMessageText = text;
-    });
-  }
-
   void _sendNewMessage(String text) {
     setState(() {
       _messages.add(text);
       _chatChannel.send(RTCDataChannelMessage(text));
       _newMessageFieldController.clear();
     });
-  }
-
-  _onSignalingState(RTCSignalingState state) {
-    print(state);
-  }
-
-  _onIceGatheringState(RTCIceGatheringState state) {
-    print(state);
-  }
-
-  _onIceConnectionState(RTCIceConnectionState state) {
-    print(state);
-  }
-
-  _onRenegotiationNeeded() {
-    print('RenegotiationNeeded');
   }
 
   bool get isChatConnected {
@@ -230,27 +204,19 @@ class _MyHomePageState extends State<MyHomePage> {
 
         case RTCDataChannelState.RTCDataChannelClosed:
           print('onDataChannelState: Closed');
+          _closeRTCConnection();
           break;
         default:
       }
     };
-
-    // setState(() {
-    //   _chatChannel = channel;
-    // });
-
-    // channel.onclose = () => {
-    //   console.log('datachannel close')
-    //   this.destroyChat()
-    // }
-
-    // dataChannel.send(RTCDataChannelMessage("Hello!"));
   }
 
   _closeRTCConnection() {
     if (_peerConnection != null) {
+      _chatChannel.close();
       _peerConnection.close();
       setState(() {
+        _chatChannel = null;
         _peerConnection = null;
       });
     }
@@ -270,34 +236,20 @@ class _MyHomePageState extends State<MyHomePage> {
     try {
       _peerConnection = await createPeerConnection(_rtcConfig, _config);
 
-      _peerConnection.onSignalingState = _onSignalingState;
-      _peerConnection.onIceGatheringState = _onIceGatheringState;
-      _peerConnection.onIceConnectionState = _onIceConnectionState;
-      _peerConnection.onRenegotiationNeeded = _onRenegotiationNeeded;
+      // _peerConnection.onSignalingState = print;
+      // _peerConnection.onIceGatheringState = print;
+      // _peerConnection.onIceConnectionState = print;
+      // _peerConnection.onRenegotiationNeeded = print;
 
-      _dataChannelDict = new RTCDataChannelInit();
+      var _dataChannelDict = new RTCDataChannelInit();
       _dataChannelDict.id = 1;
-      _dataChannelDict.ordered = true;
-      _dataChannelDict.maxRetransmitTime = -1;
-      _dataChannelDict.maxRetransmits = -1;
-      _dataChannelDict.protocol = "sctp";
-      _dataChannelDict.negotiated = false;
-
       _dataChannel = await _peerConnection.createDataChannel(
           'chat-channel', _dataChannelDict);
-      _peerConnection.onDataChannel = _onDataChannel;
 
-      setState(() {});
+      setState(() {
+        _peerConnection.onDataChannel = _onDataChannel;
+      });
       return _peerConnection;
-
-      // RTCSessionDescription description =
-      //     await _peerConnection.createOffer(offerSdpConstraints);
-      // print(description.sdp);
-      // _peerConnection.setLocalDescription(description);
-
-      //change for loopback.
-      //description.type = 'answer';
-      //_peerConnection.setRemoteDescription(description);
     } catch (e) {
       print(e.toString());
     }
