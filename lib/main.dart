@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/webrtc.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:webrtc_chat_mobile/room.dart';
+import 'package:barcode_scan/barcode_scan.dart';
 
 void main() => runApp(MyApp());
 
@@ -59,7 +60,6 @@ class _MyHomePageState extends State<MyHomePage> {
   RTCDataChannel _dataChannel;
 
   List<String> _messages = [];
-  final _roomIDFieldController = TextEditingController();
   final _newMessageFieldController = TextEditingController();
 
   Map<String, dynamic> _rtcConfig = {
@@ -75,6 +75,16 @@ class _MyHomePageState extends State<MyHomePage> {
     },
     'optional': [],
   };
+
+  void _scanQRCode() async {
+    var result = await BarcodeScanner.scan();
+
+    if (result.type == ResultType.Barcode &&
+        result.format == BarcodeFormat.qr) {
+      _setPeerId(result.rawContent);
+      _joinRoom();
+    }
+  }
 
   void _joinRoom() async {
     await _createNewRTCConnection();
@@ -211,10 +221,12 @@ class _MyHomePageState extends State<MyHomePage> {
     };
   }
 
-  _closeRTCConnection() {
+  _closeRTCConnection() async {
     if (_peerConnection != null) {
-      _chatChannel.close();
-      _peerConnection.close();
+      if (_chatChannel != null) {
+        await _chatChannel.close();
+      }
+      await _peerConnection.close();
       setState(() {
         _chatChannel = null;
         _peerConnection = null;
@@ -236,19 +248,30 @@ class _MyHomePageState extends State<MyHomePage> {
     try {
       _peerConnection = await createPeerConnection(_rtcConfig, _config);
 
-      // _peerConnection.onSignalingState = print;
-      // _peerConnection.onIceGatheringState = print;
-      // _peerConnection.onIceConnectionState = print;
-      // _peerConnection.onRenegotiationNeeded = print;
+      _peerConnection.onSignalingState = (state) => print(state);
+      _peerConnection.onIceGatheringState = (state) => print(state);
+      _peerConnection.onRenegotiationNeeded =
+          () => print('onRenegotiationNeeded');
+      _peerConnection.onIceConnectionState = (state) {
+        print(state);
+        switch (state) {
+          case RTCIceConnectionState.RTCIceConnectionStateDisconnected:
+          case RTCIceConnectionState.RTCIceConnectionStateFailed:
+            _closeRTCConnection();
+            break;
+          case RTCIceConnectionState.RTCIceConnectionStateConnected:
+            _peerConnection.onDataChannel = _onDataChannel;
+            break;
+          default:
+        }
+      };
 
-      var _dataChannelDict = new RTCDataChannelInit();
-      _dataChannelDict.id = 1;
-      _dataChannel = await _peerConnection.createDataChannel(
-          'chat-channel', _dataChannelDict);
+      // var _dataChannelDict = new RTCDataChannelInit();
+      // _dataChannelDict.id = 1;
+      // _dataChannel = await _peerConnection.createDataChannel(
+      //     'chat-channel', _dataChannelDict);
 
-      setState(() {
-        _peerConnection.onDataChannel = _onDataChannel;
-      });
+      setState(() {});
       return _peerConnection;
     } catch (e) {
       print(e.toString());
@@ -299,16 +322,29 @@ class _MyHomePageState extends State<MyHomePage> {
                         decoration:
                             InputDecoration(hintText: 'Enter a Peer ID')),
                     Container(
-                      margin: EdgeInsets.only(top: 10),
-                      child: RaisedButton(
-                        onPressed: _peerId != '' &&
-                                !isChatConnecting &&
-                                !isChatConnected
-                            ? _joinRoom
-                            : null,
-                        child: Text('Connect', style: TextStyle(fontSize: 14)),
-                      ),
-                    ),
+                        margin: EdgeInsets.only(top: 10),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: <Widget>[
+                            RaisedButton(
+                              onPressed: _peerId != '' &&
+                                      !isChatConnecting &&
+                                      !isChatConnected
+                                  ? _joinRoom
+                                  : null,
+                              child: Text('Connect',
+                                  style: TextStyle(fontSize: 14)),
+                            ),
+                            SizedBox(width: 20),
+                            RaisedButton(
+                              onPressed: !isChatConnecting && !isChatConnected
+                                  ? _scanQRCode
+                                  : null,
+                              child: Text('Scan QR code',
+                                  style: TextStyle(fontSize: 14)),
+                            ),
+                          ],
+                        )),
                   ],
                 ),
               if (isChatConnected)
