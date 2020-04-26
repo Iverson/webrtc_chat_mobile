@@ -57,7 +57,7 @@ class _MyHomePageState extends State<MyHomePage> {
   dynamic _room;
   RTCDataChannel _chatChannel;
   RTCPeerConnection _peerConnection;
-  RTCDataChannel _dataChannel;
+  bool _isConnecting = false;
 
   List<String> _messages = [];
   final _newMessageFieldController = TextEditingController();
@@ -87,13 +87,27 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   void _joinRoom() async {
-    await _createNewRTCConnection();
     setState(() {
-      _messages = [];
+      _isConnecting = true;
     });
     var roomDoc = Firestore.instance.collection('rooms').document(_peerId);
     var roomSnapshot = await roomDoc.get();
     if (roomSnapshot.exists) {
+      var room = Room.fromJson(roomSnapshot.data);
+      var pc = await _createNewRTCConnection();
+      setState(() {
+        _peerConnection = pc;
+        _messages = [];
+      });
+
+      var _dataChannelDict = new RTCDataChannelInit();
+      _dataChannelDict.id = room.dataChannelId;
+      _dataChannelDict.negotiated = true;
+      _dataChannelDict.protocol = 'sctp';
+      _chatChannel = await _peerConnection.createDataChannel(
+          'chat-channel', _dataChannelDict);
+      _onDataChannel(_chatChannel);
+
       roomDoc
           .snapshots()
           .listen((payload) => _room = payload.exists ? payload : null);
@@ -118,9 +132,7 @@ class _MyHomePageState extends State<MyHomePage> {
       };
 
       // Code for creating SDP answer below
-      var room = Room.fromJson(roomSnapshot.data);
-      var offer = room.offer;
-      await _peerConnection.setRemoteDescription(offer);
+      await _peerConnection.setRemoteDescription(room.offer);
       var answer = await _peerConnection.createAnswer(_rtcConstraints);
       await _peerConnection.setLocalDescription(answer);
 
@@ -184,7 +196,7 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   bool get isChatConnecting {
-    return _peerConnection != null && !isChatConnected;
+    return _isConnecting;
   }
 
   /// Send some sample messages and handle incoming messages.
@@ -209,6 +221,7 @@ class _MyHomePageState extends State<MyHomePage> {
           setState(() {
             final messageText = 'Hi! I just connected';
             channel.send(RTCDataChannelMessage(messageText));
+            _isConnecting = false;
           });
           break;
 
@@ -230,6 +243,7 @@ class _MyHomePageState extends State<MyHomePage> {
       setState(() {
         _chatChannel = null;
         _peerConnection = null;
+        _isConnecting = false;
       });
     }
   }
@@ -246,13 +260,21 @@ class _MyHomePageState extends State<MyHomePage> {
     _closeRTCConnection();
 
     try {
-      _peerConnection = await createPeerConnection(_rtcConfig, _config);
+      var pc = await createPeerConnection(_rtcConfig, _config);
+      print('createPeerConnection');
 
-      _peerConnection.onSignalingState = (state) => print(state);
-      _peerConnection.onIceGatheringState = (state) => print(state);
-      _peerConnection.onRenegotiationNeeded =
-          () => print('onRenegotiationNeeded');
-      _peerConnection.onIceConnectionState = (state) {
+      pc.onSignalingState = (state) => print(state);
+      pc.onIceGatheringState = (state) {
+        print(state);
+        switch (state) {
+          case RTCIceGatheringState.RTCIceGatheringStateComplete:
+            break;
+          default:
+        }
+      };
+
+      pc.onRenegotiationNeeded = () => print('onRenegotiationNeeded');
+      pc.onIceConnectionState = (state) {
         print(state);
         switch (state) {
           case RTCIceConnectionState.RTCIceConnectionStateDisconnected:
@@ -260,19 +282,12 @@ class _MyHomePageState extends State<MyHomePage> {
             _closeRTCConnection();
             break;
           case RTCIceConnectionState.RTCIceConnectionStateConnected:
-            _peerConnection.onDataChannel = _onDataChannel;
             break;
           default:
         }
       };
 
-      // var _dataChannelDict = new RTCDataChannelInit();
-      // _dataChannelDict.id = 1;
-      // _dataChannel = await _peerConnection.createDataChannel(
-      //     'chat-channel', _dataChannelDict);
-
-      setState(() {});
-      return _peerConnection;
+      return pc;
     } catch (e) {
       print(e.toString());
     }
