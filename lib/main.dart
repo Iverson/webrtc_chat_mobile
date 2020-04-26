@@ -1,9 +1,15 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'dart:developer' as developer;
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/webrtc.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:webrtc_chat_mobile/data_message.dart';
 import 'package:webrtc_chat_mobile/room.dart';
 import 'package:barcode_scan/barcode_scan.dart';
+import 'package:sensors/sensors.dart';
+import 'package:stream_transform/stream_transform.dart';
 
 void main() => runApp(MyApp());
 
@@ -61,6 +67,9 @@ class _MyHomePageState extends State<MyHomePage> {
 
   List<String> _messages = [];
   final _newMessageFieldController = TextEditingController();
+
+  List<StreamSubscription<dynamic>> _streamSubscriptions =
+      <StreamSubscription<dynamic>>[];
 
   Map<String, dynamic> _rtcConfig = {
     "iceServers": [
@@ -391,5 +400,40 @@ class _MyHomePageState extends State<MyHomePage> {
         ),
       ),
     );
+  }
+
+  @override
+  void dispose() {
+    super.dispose();
+    for (StreamSubscription<dynamic> subscription in _streamSubscriptions) {
+      subscription.cancel();
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _streamSubscriptions.add(userAccelerometerEvents
+        // .transform(StreamTransformer.fromBind(
+        //     (s) => s.throttle(const Duration(milliseconds: 50))))
+        .listen((UserAccelerometerEvent event) {
+      if (isChatConnected) {
+        var moveEvent = DataMessage(
+            'remote_move', {'x': event.x, 'y': event.y, 'z': event.z});
+        print(jsonEncode(moveEvent));
+        _chatChannel.send(RTCDataChannelMessage(jsonEncode(moveEvent)));
+      }
+    }));
+    // _streamSubscriptions.add(gyroscopeEvents.listen((GyroscopeEvent event) {
+    //   setState(() {
+    //     _gyroscopeValues = <double>[event.x, event.y, event.z];
+    //   });
+    // }));
+    // _streamSubscriptions
+    //     .add(userAccelerometerEvents.listen((UserAccelerometerEvent event) {
+    //   setState(() {
+    //     _userAccelerometerValues = <double>[event.x, event.y, event.z];
+    //   });
+    // }));
   }
 }
